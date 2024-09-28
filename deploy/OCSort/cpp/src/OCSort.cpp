@@ -114,7 +114,7 @@ namespace ocsort {
             trackers[m(1)].update(&(tmp_bbox), dets_first(m(0), 5));
         }
         
-//step 2 of OCSORT starts here (?)
+//use BYTE assoc for low confidence dets i guess? skipping
         if (true == use_byte && dets_second.rows() > 0 && unmatched_trks.size() > 0) {
             Eigen::MatrixXf u_trks(unmatched_trks.size(), trks.cols());
             int index_for_u_trks = 0;
@@ -160,7 +160,7 @@ namespace ocsort {
             }
         }
 
-
+//step 2 of OCSORT
         if (unmatched_dets.size() > 0 && unmatched_trks.size() > 0) {
             Eigen::MatrixXf left_dets(unmatched_dets.size(), 6);
             int inx_for_dets = 0;
@@ -174,13 +174,17 @@ namespace ocsort {
             }
             Eigen::MatrixXf iou_left = giou_batch(left_dets, left_trks);
             if (iou_left.maxCoeff() > iou_threshold) {
+                
                 std::vector<std::vector<float>> iou_matrix(iou_left.rows(), std::vector<float>(iou_left.cols()));
                 for (int i = 0; i < iou_left.rows(); i++) {
                     for (int j = 0; j < iou_left.cols(); j++) {
                         iou_matrix[i][j] = -iou_left(i, j);
                     }
                 }
+
+                //what are these?
                 std::vector<int> rowsol, colsol;
+                //some kind of association?
                 float MIN_cost = execLapjv(iou_matrix, rowsol, colsol, true, 0.01, true);
                 std::vector<std::vector<int>> rematched_indices;
                 for (int i = 0; i < rowsol.size(); i++) {
@@ -188,11 +192,14 @@ namespace ocsort {
                         rematched_indices.push_back({ colsol.at(rowsol.at(i)), rowsol.at(i) });
                     }
                 }
+
+                //update rematched indices that pass threshold
                 std::vector<int> to_remove_det_indices;
                 std::vector<int> to_remove_trk_indices;
                 for (auto i : rematched_indices) {
                     int det_ind = unmatched_dets[i.at(0)];
                     int trk_ind = unmatched_trks[i.at(1)];
+                    
                     if (iou_left(i.at(0), i.at(1)) < iou_threshold) {
                         continue;
                     }
@@ -202,6 +209,7 @@ namespace ocsort {
                     to_remove_det_indices.push_back(det_ind);
                     to_remove_trk_indices.push_back(trk_ind);
                 }
+                //confusion. wtf is going on here
                 std::vector<int> tmp_res(unmatched_dets.size());
                 sort(unmatched_dets.begin(), unmatched_dets.end());              
                 sort(to_remove_det_indices.begin(), to_remove_det_indices.end());
@@ -221,18 +229,25 @@ namespace ocsort {
             }
         }
 
+        //is this how they remove tracks ??
         for (auto m : unmatched_trks) {
             trackers.at(m).update(nullptr, 0);
         }
+
+        //make new tracks for unmatched dets
         for (int i : unmatched_dets) {
             Eigen::RowVectorXf tmp_bbox = dets_first.block(i, 0, 1, 5);
             int cls_ = int(dets(i, 5));
             KalmanBoxTracker trk = KalmanBoxTracker(tmp_bbox, cls_, delta_t);
             trackers.push_back(trk);
         }
+        
+        //tmp_i bro are you fr??
         int tmp_i = trackers.size();
         for (int i = trackers.size() - 1; i >= 0; i--) {
+            //what is this
             Eigen::Matrix<float, 1, 4> d;
+            //
             int last_observation_sum = trackers.at(i).last_observation.sum();
             if (last_observation_sum < 0) {
                 d = trackers.at(i).get_state();
@@ -242,6 +257,7 @@ namespace ocsort {
             }
             if (trackers.at(i).time_since_update < 1 && ((trackers.at(i).hit_streak >= min_hits) | (frame_count <= min_hits))) {
                 Eigen::RowVectorXf tracking_res(7);
+                //what is cls? 
                 tracking_res << d(0), d(1), d(2), d(3), trackers.at(i).id + 1, trackers.at(i).cls, trackers.at(i).conf;
                 ret.push_back(tracking_res);
             }
