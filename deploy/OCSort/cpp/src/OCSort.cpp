@@ -37,35 +37,59 @@ namespace ocsort {
     }
     std::vector<Eigen::RowVectorXf> OCSort::update(Eigen::MatrixXf dets) {
         frame_count += 1;
+        //bbox
         Eigen::Matrix<float, Eigen::Dynamic, 4> xyxys = dets.leftCols(4);
+        //confidence scores
         Eigen::Matrix<float, 1, Eigen::Dynamic> confs = dets.col(4);
+        //class ids
         Eigen::Matrix<float, 1, Eigen::Dynamic> clss = dets.col(5);
+
+        //copy of detections (for manipulation?)
         Eigen::MatrixXf output_results = dets;
+        
         auto inds_low = confs.array() > 0.1;
         auto inds_high = confs.array() < det_thresh;
+        //confidence between 0.1 and thresh
         auto inds_second = inds_low && inds_high;
+
+        //low confidence dets go here
         Eigen::Matrix<float, Eigen::Dynamic, 6> dets_second;
+        //? confidence more than thresh, what does this mean?
         Eigen::Matrix<bool, 1, Eigen::Dynamic> remain_inds = (confs.array() > det_thresh);
+        //high confidence dets
         Eigen::Matrix<float, Eigen::Dynamic, 6> dets_first;
+
+        //separate detections into two types. Possibly high-low confidence.
+        //for each row in the detections matrix
         for (int i = 0; i < output_results.rows(); i++) {
             if (true == inds_second(i)) {
+                //insert detection[i] into dets_second
                 dets_second.conservativeResize(dets_second.rows() + 1, Eigen::NoChange);
                 dets_second.row(dets_second.rows() - 1) = output_results.row(i);
             }
             if (true == remain_inds(i)) {
+                //insert into dets_first
                 dets_first.conservativeResize(dets_first.rows() + 1, Eigen::NoChange);
                 dets_first.row(dets_first.rows() - 1) = output_results.row(i);
             }
         }
+        //line 3 of OCSORT pseudo code ends here
+
+        //holds bbox predictions and perhaps score. 5 cols 
         Eigen::MatrixXf trks = Eigen::MatrixXf::Zero(trackers.size(), 5);
+        //is this just unused?
         std::vector<int> to_del;
+        //return of the function. why declare it here? idk
         std::vector<Eigen::RowVectorXf> ret;
+        //insert KF predictions (and score?) into trks rows
         for (int i = 0; i < trks.rows(); i++) {
             Eigen::RowVectorXf pos = trackers[i].predict();
             trks.row(i) << pos(0), pos(1), pos(2), pos(3), 0;
         }
+        //self explanatory
         Eigen::MatrixXf velocities = Eigen::MatrixXf::Zero(trackers.size(), 2);
         Eigen::MatrixXf last_boxes = Eigen::MatrixXf::Zero(trackers.size(), 5);
+        //line 5 of OCSORT? Historical Z?
         Eigen::MatrixXf k_observations = Eigen::MatrixXf::Zero(trackers.size(), 5);
         for (int i = 0; i < trackers.size(); i++) {
             velocities.row(i) = trackers[i].velocity;
@@ -73,19 +97,24 @@ namespace ocsort {
             k_observations.row(i) = k_previous_obs(trackers[i].observations, trackers[i].age, delta_t);
         }
 
+        //vector of [int, int] to store matches?
         std::vector<Eigen::Matrix<int, 1, 2>> matched;
         std::vector<int> unmatched_dets;
         std::vector<int> unmatched_trks;
+        //assoc step. matching trks to dets_first. are the other params used to calculate the cost matrix? result is a 3-tuple just like SORT iirc
         auto result = associate(dets_first, trks, iou_threshold, velocities, k_observations, inertia);
         matched = std::get<0>(result);
         unmatched_dets = std::get<1>(result);
         unmatched_trks = std::get<2>(result);
+
+        //feed dets into KF update
         for (auto m : matched) {
             Eigen::Matrix<float, 5, 1> tmp_bbox;
             tmp_bbox = dets_first.block<1, 5>(m(0), 0);
             trackers[m(1)].update(&(tmp_bbox), dets_first(m(0), 5));
         }
-
+        
+//step 2 of OCSORT starts here (?)
         if (true == use_byte && dets_second.rows() > 0 && unmatched_trks.size() > 0) {
             Eigen::MatrixXf u_trks(unmatched_trks.size(), trks.cols());
             int index_for_u_trks = 0;
