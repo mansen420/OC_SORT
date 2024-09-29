@@ -224,11 +224,11 @@ class OCSort(object):
             scores = output_results[:, 4]
             bboxes = output_results[:, :4]
         else:
-            #what is going on here?
+            # what is going on here?
             output_results = output_results.cpu().numpy()
             scores = output_results[:, 4] * output_results[:, 5]
             bboxes = output_results[:, :4]  # x1y1x2y2
-        #normalize bboxes to [0, 1] range I suppose
+        # normalize bboxes to [0, 1] range I suppose
         img_h, img_w = img_info[0], img_info[1]
         scale = min(img_size[0] / float(img_h), img_size[1] / float(img_w))
         bboxes /= scale
@@ -274,18 +274,22 @@ class OCSort(object):
         k_observations = np.array(
             [k_previous_obs(trk.observations, trk.age, self.delta_t) for trk in self.trackers])
 
+# above : fill trks with bboxes
+
         """
             First round of association
         """
         matched, unmatched_dets, unmatched_trks = associate(
             dets, trks, self.iou_threshold, velocities, k_observations, self.inertia)
         for m in matched:
+            # update all matched tracks with corresponding det
             self.trackers[m[1]].update(dets[m[0], :])
 
         """
             Second round of associaton by OCR
         """
         # BYTE association
+        # ignored
         if self.use_byte and len(dets_second) > 0 and unmatched_trks.shape[0] > 0:
             u_trks = trks[unmatched_trks]
             iou_left = self.asso_func(dets_second, u_trks)          # iou between low score detections and unmatched tracks
@@ -306,17 +310,24 @@ class OCSort(object):
                     to_remove_trk_indices.append(trk_ind)
                 unmatched_trks = np.setdiff1d(unmatched_trks, np.array(to_remove_trk_indices))
 
+        # shape just returns an array of ints represnting length for every dimension
         if unmatched_dets.shape[0] > 0 and unmatched_trks.shape[0] > 0:
+            # im guessing this will pick all indices in unmached_dets?
             left_dets = dets[unmatched_dets]
             left_trks = last_boxes[unmatched_trks]
+
+            # why didn't we get IOU in first round of matching? was it happening in the association func?
             iou_left = self.asso_func(left_dets, left_trks)
             iou_left = np.array(iou_left)
+
+            # strange condition
             if iou_left.max() > self.iou_threshold:
                 """
                     NOTE: by using a lower threshold, e.g., self.iou_threshold - 0.1, you may
                     get a higher performance especially on MOT17/MOT20 datasets. But we keep it
                     uniform here for simplicity
                 """
+                # 2nd matching? what's the point of a 2nd matching anyway?
                 rematched_indices = linear_assignment(-iou_left)
                 to_remove_det_indices = []
                 to_remove_trk_indices = []
@@ -325,11 +336,14 @@ class OCSort(object):
                     if iou_left[m[0], m[1]] < self.iou_threshold:
                         continue
                     self.trackers[trk_ind].update(dets[det_ind, :])
+                    # these indices are matched, to be removed from unmatched array
                     to_remove_det_indices.append(det_ind)
                     to_remove_trk_indices.append(trk_ind)
+                # store all indices in unmatched but not in to_remove into unmatched again (basically erase those indices in to_remove)
                 unmatched_dets = np.setdiff1d(unmatched_dets, np.array(to_remove_det_indices))
                 unmatched_trks = np.setdiff1d(unmatched_trks, np.array(to_remove_trk_indices))
 
+        # idk why they do this, potentially means remove?
         for m in unmatched_trks:
             self.trackers[m].update(None)
 
@@ -339,6 +353,7 @@ class OCSort(object):
             self.trackers.append(trk)
         i = len(self.trackers)
         for trk in reversed(self.trackers):
+            # what does this mean?
             if trk.last_observation.sum() < 0:
                 d = trk.get_state()[0]
             else:
@@ -358,6 +373,9 @@ class OCSort(object):
             return np.concatenate(ret)
         return np.empty((0, 5))
 
+# above fnc : match tracks with high conf dets, then rematch with low conf dets using linear assignment, 
+# then throw away unmatched tracks? then make new trackers for unmatched dets
+    
     def update_public(self, dets, cates, scores):
         self.frame_count += 1
 
@@ -365,7 +383,8 @@ class OCSort(object):
         dets = np.concatenate((dets, det_scores), axis=1)
 
         remain_inds = scores > self.det_thresh
-        
+
+        # what are cates? categories?
         cates = cates[remain_inds]
         dets = dets[remain_inds]
 
