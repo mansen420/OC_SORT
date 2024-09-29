@@ -45,7 +45,7 @@ def convert_x_to_bbox(x, score=None):
     else:
       return np.array([x[0]-w/2., x[1]-h/2., x[0]+w/2., x[1]+h/2., score]).reshape((1, 5))
 
-
+#returns normalized displacement between two boxes (measured from center)
 def speed_direction(bbox1, bbox2):
     cx1, cy1 = (bbox1[0]+bbox1[2]) / 2.0, (bbox1[1]+bbox1[3])/2.0
     cx2, cy2 = (bbox2[0]+bbox2[2]) / 2.0, (bbox2[1]+bbox2[3])/2.0
@@ -58,6 +58,7 @@ class KalmanBoxTracker(object):
     """
     This class represents the internal state of individual tracked objects observed as bbox.
     """
+    #global tracker counter
     count = 0
 
     def __init__(self, bbox, delta_t=3, orig=False):
@@ -72,8 +73,10 @@ class KalmanBoxTracker(object):
         else:
           from filterpy.kalman import KalmanFilter
           self.kf = KalmanFilter(dim_x=7, dim_z=4)
+        #identity, this is the state transform
         self.kf.F = np.array([[1, 0, 0, 0, 1, 0, 0], [0, 1, 0, 0, 0, 1, 0], [0, 0, 1, 0, 0, 0, 1], [
                             0, 0, 0, 1, 0, 0, 0],  [0, 0, 0, 0, 1, 0, 0], [0, 0, 0, 0, 0, 1, 0], [0, 0, 0, 0, 0, 0, 1]])
+        #observation matrix. first 4 measurements?
         self.kf.H = np.array([[1, 0, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0, 0],
                             [0, 0, 1, 0, 0, 0, 0], [0, 0, 0, 1, 0, 0, 0]])
 
@@ -83,10 +86,12 @@ class KalmanBoxTracker(object):
         self.kf.Q[-1, -1] *= 0.01
         self.kf.Q[4:, 4:] *= 0.01
 
+        #insert positions into state vector
         self.kf.x[:4] = convert_bbox_to_z(bbox)
         self.time_since_update = 0
         self.id = KalmanBoxTracker.count
         KalmanBoxTracker.count += 1
+        #estimation history?
         self.history = []
         self.hits = 0
         self.hit_streak = 0
@@ -96,16 +101,22 @@ class KalmanBoxTracker(object):
         function k_previous_obs. It is ugly and I do not like it. But to support generate observation array in a 
         fast and unified way, which you would see below k_observations = np.array([k_previous_obs(...]]), let's bear it for now.
         """
+        
         self.last_observation = np.array([-1, -1, -1, -1, -1])  # placeholder
+        
+        #what are these?
         self.observations = dict()
         self.history_observations = []
+        
         self.velocity = None
         self.delta_t = delta_t
 
+    #bbox is an observation
     def update(self, bbox):
         """
         Updates the state vector with observed bbox.
         """
+        #get previous box somehow, to compare with current observation to get self velocity
         if bbox is not None:
             if self.last_observation.sum() >= 0:  # no previous observation
                 previous_box = None
@@ -133,23 +144,29 @@ class KalmanBoxTracker(object):
             self.history = []
             self.hits += 1
             self.hit_streak += 1
+            #KF actually updates here
             self.kf.update(convert_bbox_to_z(bbox))
         else:
+            #case where no observation was made?
             self.kf.update(bbox)
 
     def predict(self):
         """
         Advances the state vector and returns the predicted bounding box estimate.
         """
+        #what is this doing?
         if((self.kf.x[6]+self.kf.x[2]) <= 0):
             self.kf.x[6] *= 0.0
 
         self.kf.predict()
         self.age += 1
+        #maintain hit streak with time_since_update, which is set to 0 on update, incremented on predict
         if(self.time_since_update > 0):
             self.hit_streak = 0
         self.time_since_update += 1
+        
         self.history.append(convert_x_to_bbox(self.kf.x))
+        
         return self.history[-1]
 
     def get_state(self):
@@ -207,36 +224,53 @@ class OCSort(object):
             scores = output_results[:, 4]
             bboxes = output_results[:, :4]
         else:
+            #what is going on here?
             output_results = output_results.cpu().numpy()
             scores = output_results[:, 4] * output_results[:, 5]
             bboxes = output_results[:, :4]  # x1y1x2y2
+        #normalize bboxes to [0, 1] range I suppose
         img_h, img_w = img_info[0], img_info[1]
         scale = min(img_size[0] / float(img_h), img_size[1] / float(img_w))
         bboxes /= scale
+        # what is this?
         dets = np.concatenate((bboxes, np.expand_dims(scores, axis=-1)), axis=1)
+        # get indices of dets between 0.1 and det_thresh
         inds_low = scores > 0.1
         inds_high = scores < self.det_thresh
         inds_second = np.logical_and(inds_low, inds_high)  # self.det_thresh > score > 0.1, for second matching
+        # I assume this will pick the indices that are = 1 in inds_second
         dets_second = dets[inds_second]  # detections for second matching
         remain_inds = scores > self.det_thresh
+        # First matching happens here? This has all the detection indices with score > det_thresh
         dets = dets[remain_inds]
-
+        
+# above : we got high and low conf dets in dets and dets_second
+        
         # get predicted locations from existing trackers.
+        # 5 cols, X rows
         trks = np.zeros((len(self.trackers), 5))
         to_del = []
         ret = []
+        # store prediction result in trks
         for t, trk in enumerate(trks):
             pos = self.trackers[t].predict()[0]
             trk[:] = [pos[0], pos[1], pos[2], pos[3], 0]
+            # add invalid indices to be deleted below
             if np.any(np.isnan(pos)):
                 to_del.append(t)
+        # reading the cods, this bascically removes rows with invalid (nan, inf) values
         trks = np.ma.compress_rows(np.ma.masked_invalid(trks))
+
+        # idk why they didn't delete those in the loop directly, (t is an index ?)
         for t in reversed(to_del):
             self.trackers.pop(t)
 
+        # record velocities and last boxes, refer to KF box tracker class above on those
         velocities = np.array(
             [trk.velocity if trk.velocity is not None else np.array((0, 0)) for trk in self.trackers])
         last_boxes = np.array([trk.last_observation for trk in self.trackers])
+        
+        # what is this?
         k_observations = np.array(
             [k_previous_obs(trk.observations, trk.age, self.delta_t) for trk in self.trackers])
 
